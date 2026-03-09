@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TORQUELAB</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;500;600;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #0c0c0e;
+    --panel:     #111316;
+    --border:    #1e2128;
+    --text-dim:  #4a5060;
+    --text-mid:  #8a9ab0;
+    --text:      #cdd6e8;
+    --cyan:      #00d4ff;
+    --green:     #39e07a;
+    --amber:     #ffb830;
+    --red:       #ff3a3a;
+    --rpm-arc:   #00d4ff;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Barlow Condensed', sans-serif;
+    width: 100vw; height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    user-select: none;
+  }
+
+  /* ── TOP BAR ───────────────────────────────────── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    height: 36px;
+    flex-shrink: 0;
+  }
+  .logo {
+    font-size: 15px;
+    font-weight: 900;
+    letter-spacing: 4px;
+    color: var(--cyan);
+    text-transform: uppercase;
+  }
+  .logo span { color: var(--text-dim); font-weight: 400; }
+
+  /* shift light bar */
+  .shiftbar {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .shiftled {
+    width: 18px; height: 8px;
+    border-radius: 2px;
+    background: #1a1d24;
+    transition: background 0.05s;
+  }
+  .shiftled.on-g  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .shiftled.on-a  { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+  .shiftled.on-r  { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+
+  .topright {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+  }
+  .topright .val { color: var(--text-mid); font-weight: 600; }
+  .nodot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--red);
+    box-shadow: 0 0 6px var(--red);
+  }
+  .nodot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+  /* ── MAIN GRID ─────────────────────────────────── */
+  .main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 220px 1fr 220px;
+    gap: 1px;
+    background: var(--border);
+    overflow: hidden;
+  }
+
+  /* ── SIDE PANELS ───────────────────────────────── */
+  .side {
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .bar-block {
+    padding: 10px 14px 12px;
+    background: var(--bg);
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+
+  .bar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 6px;
+  }
+  .bar-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+  }
+  .bar-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+    transition: color 0.3s;
+  }
+  .bar-unit {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-left: 2px;
+    font-weight: 400;
+  }
+
+  .bar-track {
+    position: relative;
+    height: 8px;
+    background: #191c24;
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 4px;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.1s ease, background 0.3s;
+    background: var(--cyan);
+  }
+  .bar-fill.warn  { background: var(--amber); }
+  .bar-fill.crit  { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+  .bar-minmax {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+  }
+
+  /* zone markers */
+  .bar-track::after {
+    content: '';
+    position: absolute;
+    right: 20%;
+    top: 0; bottom: 0;
+    width: 1px;
+    background: rgba(255,184,48,0.25);
+  }
+
+  /* ── PEDAL BLOCK ───────────────────────────────── */
+  .pedal-block {
+    padding: 10px 14px;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .pedal-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .pedal-name {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    width: 20px;
+    flex-shrink: 0;
+  }
+  .pedal-track {
+    flex: 1;
+    height: 6px;
+    background: #191c24;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .pedal-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.08s ease;
+  }
+  .pedal-fill.thr { background: var(--green); }
+  .pedal-fill.brk { background: var(--red); }
+  .pedal-fill.clt { background: var(--amber); }
+  .pedal-num {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-mid);
+    width: 28px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* ── CENTER ────────────────────────────────────── */
+  .center {
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0 10px;
+    position: relative;
+  }
+
+  /* RPM ARC */
+  .rpm-wrap {
+    position: relative;
+    width: 300px;
+    height: 175px;
+    flex-shrink: 0;
+  }
+  .rpm-svg {
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  .rpm-track {
+    fill: none;
+    stroke: #191c24;
+    stroke-width: 10;
+    stroke-linecap: round;
+  }
+  .rpm-fill {
+    fill: none;
+    stroke: var(--cyan);
+    stroke-width: 10;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.08s ease, stroke 0.2s;
+    filter: drop-shadow(0 0 4px var(--cyan));
+  }
+  .rpm-fill.warn { stroke: var(--amber); filter: drop-shadow(0 0 4px var(--amber)); }
+  .rpm-fill.crit { stroke: var(--red);   filter: drop-shadow(0 0 6px var(--red)); }
+
+  .rpm-ticks text {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    fill: var(--text-dim);
+  }
+
+  .rpm-center {
+    position: absolute;
+    bottom: 0; left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    line-height: 1;
+  }
+  .rpm-number {
+    font-size: 54px;
+    font-weight: 900;
+    color: var(--text);
+    letter-spacing: -1px;
+    transition: color 0.3s;
+  }
+  .rpm-label {
+    font-size: 10px;
+    letter-spacing: 3px;
+    color: var(--text-dim);
+    font-weight: 600;
+    margin-top: 2px;
+  }
+
+  /* GEAR + SPEED ROW */
+  .center-mid {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    width: 100%;
+    padding: 0 20px;
+  }
+
+  .gear-display {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 0 0 auto;
+    padding: 0 30px;
+    border-right: 1px solid var(--border);
+  }
+  .gear-label {
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .gear-number {
+    font-size: 90px;
+    font-weight: 900;
+    color: var(--cyan);
+    line-height: 0.85;
+    letter-spacing: -2px;
+    text-shadow: 0 0 30px rgba(0,212,255,0.3);
+    transition: color 0.2s;
+    min-width: 70px;
+    text-align: center;
+  }
+
+  .speed-display {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 1;
+    padding: 0 30px;
+  }
+  .speed-number {
+    font-size: 72px;
+    font-weight: 900;
+    color: var(--text);
+    line-height: 0.9;
+    letter-spacing: -1px;
+  }
+  .speed-unit {
+    font-size: 11px;
+    letter-spacing: 3px;
+    color: var(--text-dim);
+    font-weight: 600;
+    margin-top: 4px;
+  }
+
+  /* BOTTOM ROW — WARNINGS */
+  .warn-row {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    padding: 0 12px;
+    height: 32px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    width: 100%;
+  }
+  .warn-light {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    opacity: 0.3;
+    transition: opacity 0.2s, color 0.2s;
+  }
+  .warn-light.active {
+    opacity: 1;
+  }
+  .warn-light.active.amber { color: var(--amber); }
+  .warn-light.active.red   { color: var(--red); }
+  .warn-light.active.green { color: var(--green); }
+  .warn-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 5px currentColor;
+    flex-shrink: 0;
+  }
+
+  /* BOOST / LAMBDA row in center */
+  .stat-row {
+    display: flex;
+    gap: 1px;
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+  }
+  .stat-cell {
+    flex: 1;
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+  }
+  .stat-val {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+    transition: color 0.3s;
+  }
+  .stat-lbl {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin-top: 3px;
+  }
+  .stat-sub {
+    font-size: 9px;
+    color: var(--text-dim);
+    margin-top: 1px;
+  }
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="logo">TORQUE<span>LAB</span></div>
+
+  <div class="shiftbar" id="shiftbar">
+    <div class="shiftled" data-i="0"></div>
+    <div class="shiftled" data-i="1"></div>
+    <div class="shiftled" data-i="2"></div>
+    <div class="shiftled" data-i="3"></div>
+    <div class="shiftled" data-i="4"></div>
+    <div class="shiftled" data-i="5"></div>
+    <div class="shiftled" data-i="6"></div>
+    <div class="shiftled" data-i="7"></div>
+    <div class="shiftled" data-i="8"></div>
+    <div class="shiftled" data-i="9"></div>
+    <div class="shiftled" data-i="10"></div>
+    <div class="shiftled" data-i="11"></div>
+  </div>
+
+  <div class="topright">
+    <div><span>SESSION</span> <span class="val" id="session-time">00:00</span></div>
+    <div><span>LAP</span> <span class="val">--:--</span></div>
+    <div class="nodot connected" id="conn-dot" title="BeamNG connection"></div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+  <!-- LEFT PANEL -->
+  <div class="side">
+    <div class="bar-block">
+      <div class="bar-header">
+        <span class="bar-label">Water Temp</span>
+        <span><span class="bar-value" id="engtemp-val">--</span><span class="bar-unit">°C</span></span>
+      </div>
+      <div>
+        <div class="bar-track"><div class="bar-fill" id="engtemp-bar" style="width:0%"></div></div>
+        <div class="bar-minmax"><span>40</span><span>WARN 100</span><span>130</span></div>
+      </div>
+    </div>
+
+    <div class="bar-block">
+      <div class="bar-header">
+        <span class="bar-label">Oil Temp</span>
+        <span><span class="bar-value" id="oiltemp-val">--</span><span class="bar-unit">°C</span></span>
+      </div>
+      <div>
+        <div class="bar-track"><div class="bar-fill" id="oiltemp-bar" style="width:0%"></div></div>
+        <div class="bar-minmax"><span>40</span><span>WARN 110</span><span>140</span></div>
+      </div>
+    </div>
+
+    <div class="bar-block">
+      <div class="bar-header">
+        <span class="bar-label">Boost</span>
+        <span><span class="bar-value" id="boost-val">--</span><span class="bar-unit">bar</span></span>
+      </div>
+      <div>
+        <div class="bar-track" style="overflow:visible">
+          <div class="bar-fill" id="boost-bar" style="width:0%; background: var(--green)"></div>
+        </div>
+        <div class="bar-minmax"><span>-0.5</span><span></span><span>2.5</span></div>
+      </div>
+    </div>
+
+    <div class="bar-block">
+      <div class="bar-header">
+        <span class="bar-label">Fuel Level</span>
+        <span><span class="bar-value" id="fuel-val">--</span><span class="bar-unit">%</span></span>
+      </div>
+      <div>
+        <div class="bar-track"><div class="bar-fill" id="fuel-bar" style="width:0%"></div></div>
+        <div class="bar-minmax"><span>0</span><span>LOW 15%</span><span>100</span></div>
+      </div>
+    </div>
+
+    <div class="pedal-block" style="flex:1">
+      <div class="pedal-row">
+        <span class="pedal-name">THR</span>
+        <div class="pedal-track"><div class="pedal-fill thr" id="thr-bar" style="width:0%"></div></div>
+        <span class="pedal-num" id="thr-val">0%</span>
+      </div>
+      <div class="pedal-row">
+        <span class="pedal-name">BRK</span>
+        <div class="pedal-track"><div class="pedal-fill brk" id="brk-bar" style="width:0%"></div></div>
+        <span class="pedal-num" id="brk-val">0%</span>
+      </div>
+      <div class="pedal-row">
+        <span class="pedal-name">CLT</span>
+        <div class="pedal-track"><div class="pedal-fill clt" id="clt-bar" style="width:0%"></div></div>
+        <span class="pedal-num" id="clt-val">0%</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER -->
+  <div class="center">
+
+    <!-- RPM ARC -->
+    <div class="rpm-wrap">
+      <svg class="rpm-svg" viewBox="0 0 300 175">
+        <!-- tick marks + labels -->
+        <g class="rpm-ticks" id="rpm-ticks"></g>
+        <!-- track arc -->
+        <path class="rpm-track" id="rpm-track-path"/>
+        <!-- fill arc -->
+        <path class="rpm-fill" id="rpm-arc"/>
+      </svg>
+      <div class="rpm-center">
+        <div class="rpm-number" id="rpm-val">0</div>
+        <div class="rpm-label">RPM</div>
+      </div>
+    </div>
+
+    <!-- GEAR + SPEED -->
+    <div class="center-mid">
+      <div class="gear-display">
+        <div class="gear-label">GEAR</div>
+        <div class="gear-number" id="gear-val">N</div>
+      </div>
+      <div class="speed-display">
+        <div class="speed-number" id="speed-val">0</div>
+        <div class="speed-unit">KM/H</div>
+      </div>
+    </div>
+
+    <!-- STAT ROW -->
+    <div class="stat-row">
+      <div class="stat-cell">
+        <div class="stat-val" id="stat-boost">0.00</div>
+        <div class="stat-lbl">Boost</div>
+        <div class="stat-sub">BAR</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-val" id="stat-engtemp" style="color:var(--green)">--</div>
+        <div class="stat-lbl">H2O Temp</div>
+        <div class="stat-sub">°C</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-val" id="stat-oiltemp" style="color:var(--green)">--</div>
+        <div class="stat-lbl">Oil Temp</div>
+        <div class="stat-sub">°C</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-val" id="stat-fuel">--</div>
+        <div class="stat-lbl">Fuel</div>
+        <div class="stat-sub">%</div>
+      </div>
+    </div>
+
+    <!-- WARNING LIGHTS -->
+    <div class="warn-row">
+      <div class="warn-light amber" id="wl-abs"><div class="warn-dot"></div>ABS</div>
+      <div class="warn-light red"   id="wl-oil"><div class="warn-dot"></div>OIL</div>
+      <div class="warn-light amber" id="wl-bat"><div class="warn-dot"></div>BATT</div>
+      <div class="warn-light red"   id="wl-hbk"><div class="warn-dot"></div>HBK</div>
+      <div class="warn-light green" id="wl-sl" ><div class="warn-dot"></div>SHIFT</div>
+      <div class="warn-light amber" id="wl-sigl"><div class="warn-dot"></div>◀</div>
+      <div class="warn-light amber" id="wl-sigr"><div class="warn-dot"></div>▶</div>
+      <div class="warn-light green" id="wl-beam"><div class="warn-dot"></div>BEAM</div>
+      <div class="warn-light green" id="wl-tc"  ><div class="warn-dot"></div>TC</div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="side">
+    <div class="bar-block" style="flex:2">
+      <div class="bar-header" style="margin-bottom:10px">
+        <span class="bar-label">RPM</span>
+        <span><span class="bar-value" id="rpm-right">0</span><span class="bar-unit">rpm</span></span>
+      </div>
+      <!-- vertical rpm bar -->
+      <div style="flex:1; background:#191c24; border-radius:2px; position:relative; overflow:hidden; min-height:60px;">
+        <div id="rpm-vbar" style="position:absolute;bottom:0;left:0;right:0;height:0%;background:var(--cyan);transition:height 0.08s ease;border-radius:2px;"></div>
+        <!-- redline marker -->
+        <div style="position:absolute;bottom:20%;left:0;right:0;height:1px;background:rgba(255,58,58,0.4)"></div>
+      </div>
+      <div class="bar-minmax" style="margin-top:4px"><span>0</span><span>REDLINE 7k</span><span>8000</span></div>
+    </div>
+
+    <div class="bar-block">
+      <div class="bar-header">
+        <span class="bar-label">Throttle</span>
+        <span><span class="bar-value" id="thr-right">0</span><span class="bar-unit">%</span></span>
+      </div>
+      <div>
+        <div class="bar-track"><div class="bar-fill" id="thr-right-bar" style="width:0%;background:var(--green)"></div></div>
+        <div class="bar-minmax"><span>0</span><span></span><span>100</span></div>
+      </div>
+    </div>
+
+    <div class="bar-block">
+      <div class="bar-header">
+        <span class="bar-label">Brake</span>
+        <span><span class="bar-value" id="brk-right">0</span><span class="bar-unit">%</span></span>
+      </div>
+      <div>
+        <div class="bar-track"><div class="bar-fill" id="brk-right-bar" style="width:0%;background:var(--red)"></div></div>
+        <div class="bar-minmax"><span>0</span><span></span><span>100</span></div>
+      </div>
+    </div>
+
+    <div class="bar-block">
+      <div class="bar-header">
+        <span class="bar-label">Clutch</span>
+        <span><span class="bar-value" id="clt-right">0</span><span class="bar-unit">%</span></span>
+      </div>
+      <div>
+        <div class="bar-track"><div class="bar-fill" id="clt-right-bar" style="width:0%;background:var(--amber)"></div></div>
+        <div class="bar-minmax"><span>0</span><span></span><span>100</span></div>
+      </div>
+    </div>
+
+    <div class="bar-block" style="justify-content:center;align-items:center;display:flex;flex-direction:column">
+      <div style="font-size:9px;font-weight:700;letter-spacing:2px;color:var(--text-dim);margin-bottom:6px">SPEED</div>
+      <div style="font-size:40px;font-weight:900;color:var(--text);line-height:1" id="speed-right">0</div>
+      <div style="font-size:9px;letter-spacing:2px;color:var(--text-dim);margin-top:2px">KM/H</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── ARC SETUP ──────────────────────────────────────────
+const CX = 150, CY = 165, R = 130;
+const START_DEG = 200, END_DEG = 340; // sweep
+const MAX_RPM = 8000;
+
+function polarToXY(deg, r) {
+  const rad = (deg - 90) * Math.PI / 180;
+  return { x: CX + r * Math.cos(rad), y: CY + r * Math.sin(rad) };
+}
+
+function arcPath(startDeg, endDeg, r) {
+  const s = polarToXY(startDeg, r);
+  const e = polarToXY(endDeg, r);
+  const large = (endDeg - startDeg) > 180 ? 1 : 0;
+  return `M ${s.x} ${s.y} A ${r} ${r} 0 ${large} 1 ${e.x} ${e.y}`;
+}
+
+// draw static arc track
+document.getElementById('rpm-track-path').setAttribute('d', arcPath(START_DEG, START_DEG + (END_DEG - START_DEG), R));
+
+// draw tick marks
+const tickG = document.getElementById('rpm-ticks');
+for (let k = 0; k <= 8; k++) {
+  const frac = k / 8;
+  const deg = START_DEG + frac * (END_DEG - START_DEG);
+  const inner = polarToXY(deg, R - 18);
+  const outer = polarToXY(deg, R + 2);
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  line.setAttribute('x1', inner.x); line.setAttribute('y1', inner.y);
+  line.setAttribute('x2', outer.x); line.setAttribute('y2', outer.y);
+  line.setAttribute('stroke', k >= 7 ? '#ff3a3a' : '#2a2f3a');
+  line.setAttribute('stroke-width', '2');
+  tickG.appendChild(line);
+
+  const lp = polarToXY(deg, R - 32);
+  const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  txt.setAttribute('x', lp.x); txt.setAttribute('y', lp.y + 4);
+  txt.setAttribute('text-anchor', 'middle');
+  txt.setAttribute('fill', k >= 7 ? '#ff3a3a' : '#3a4050');
+  txt.setAttribute('font-size', '11');
+  txt.setAttribute('font-weight', '700');
+  txt.setAttribute('font-family', 'Barlow Condensed, sans-serif');
+  txt.textContent = k;
+  tickG.appendChild(txt);
+}
+
+function updateRpmArc(rpm) {
+  const frac = Math.min(rpm / MAX_RPM, 1);
+  const endDeg = START_DEG + frac * (END_DEG - START_DEG);
+  const arc = document.getElementById('rpm-arc');
+  if (frac < 0.001) { arc.setAttribute('d', ''); return; }
+  arc.setAttribute('d', arcPath(START_DEG, endDeg, R));
+  if (rpm > 7000) { arc.className.baseVal = 'rpm-fill crit'; }
+  else if (rpm > 5500) { arc.className.baseVal = 'rpm-fill warn'; }
+  else { arc.className.baseVal = 'rpm-fill'; }
+}
+
+// ── SHIFT LIGHTS ───────────────────────────────────────
+function updateShiftLights(rpm) {
+  const leds = document.querySelectorAll('.shiftled');
+  const thresholds = [0.55, 0.60, 0.65, 0.70, 0.74, 0.78, 0.82, 0.86, 0.89, 0.92, 0.95, 0.98];
+  const frac = rpm / MAX_RPM;
+  leds.forEach((led, i) => {
+    if (frac >= thresholds[i]) {
+      led.className = 'shiftled ' + (i < 4 ? 'on-g' : i < 8 ? 'on-a' : 'on-r');
+    } else {
+      led.className = 'shiftled';
+    }
+  });
+}
+
+// ── BAR UTIL ──────────────────────────────────────────
+function setBar(id, pct, warnPct = 80, critPct = 95) {
+  const el = document.getElementById(id);
+  el.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  el.className = 'bar-fill' + (pct >= critPct ? ' crit' : pct >= warnPct ? ' warn' : '');
+}
+
+function gearStr(g) {
+  if (g <= 0) return 'R';
+  if (g === 1) return 'N';
+  return String(g - 1);
+}
+
+// ── UPDATE UI ─────────────────────────────────────────
+function updateDash(d) {
+  const rpm   = d.rpm;
+  const speed = Math.round(d.speed);
+  const gear  = d.gear;
+  const boost = d.turbo;
+  const engT  = Math.round(d.engtemp);
+  const oilT  = Math.round(d.oiltemp);
+  const fuel  = Math.round(d.fuel * 100);
+  const thr   = Math.round(d.throttle * 100);
+  const brk   = Math.round(d.brake * 100);
+  const clt   = Math.round(d.clutch * 100);
+
+  // RPM
+  updateRpmArc(rpm);
+  updateShiftLights(rpm);
+  document.getElementById('rpm-val').textContent = Math.round(rpm).toLocaleString();
+  document.getElementById('rpm-right').textContent = Math.round(rpm).toLocaleString();
+  document.getElementById('rpm-vbar').style.height = (rpm / MAX_RPM * 100) + '%';
+  const rpmVbar = document.getElementById('rpm-vbar');
+  rpmVbar.style.background = rpm > 7000 ? 'var(--red)' : rpm > 5500 ? 'var(--amber)' : 'var(--cyan)';
+
+  // Speed & Gear
+  document.getElementById('speed-val').textContent = speed;
+  document.getElementById('speed-right').textContent = speed;
+  const gs = gearStr(gear);
+  document.getElementById('gear-val').textContent = gs;
+  document.getElementById('gear-val').style.color = gs === 'R' ? 'var(--red)' : gs === 'N' ? 'var(--amber)' : 'var(--cyan)';
+
+  // Boost
+  const boostPct = ((boost + 0.5) / 3.0) * 100;
+  const boostColor = boost > 1.8 ? 'var(--red)' : boost > 1.2 ? 'var(--amber)' : 'var(--green)';
+  document.getElementById('boost-bar').style.width = Math.max(0, boostPct) + '%';
+  document.getElementById('boost-bar').style.background = boostColor;
+  document.getElementById('boost-val').textContent = boost.toFixed(2);
+  document.getElementById('stat-boost').textContent = boost.toFixed(2);
+  document.getElementById('stat-boost').style.color = boostColor;
+
+  // Temps
+  const engPct  = ((engT - 40) / (130 - 40)) * 100;
+  const oilPct  = ((oilT - 40) / (140 - 40)) * 100;
+  setBar('engtemp-bar', engPct, 80, 90);
+  setBar('oiltemp-bar', oilPct, 80, 90);
+  document.getElementById('engtemp-val').textContent = engT;
+  document.getElementById('oiltemp-val').textContent = oilT;
+  document.getElementById('stat-engtemp').textContent = engT;
+  document.getElementById('stat-oiltemp').textContent = oilT;
+  document.getElementById('stat-engtemp').style.color = engT > 105 ? 'var(--red)' : engT > 95 ? 'var(--amber)' : 'var(--green)';
+  document.getElementById('stat-oiltemp').style.color = oilT > 115 ? 'var(--red)' : oilT > 105 ? 'var(--amber)' : 'var(--green)';
+
+  // Fuel
+  setBar('fuel-bar', fuel, 20, 10);
+  document.getElementById('fuel-val').textContent = fuel;
+  document.getElementById('stat-fuel').textContent = fuel;
+  document.getElementById('stat-fuel').style.color = fuel < 10 ? 'var(--red)' : fuel < 20 ? 'var(--amber)' : 'var(--text)';
+
+  // Pedals
+  const setPedal = (name, val, barId, numId, rightBarId, rightNumId) => {
+    document.getElementById(barId).style.width = val + '%';
+    document.getElementById(numId).textContent = val + '%';
+    document.getElementById(rightBarId).style.width = val + '%';
+    document.getElementById(rightNumId).textContent = val;
+  };
+  setPedal('thr', thr, 'thr-bar', 'thr-val', 'thr-right-bar', 'thr-right');
+  setPedal('brk', brk, 'brk-bar', 'brk-val', 'brk-right-bar', 'brk-right');
+  setPedal('clt', clt, 'clt-bar', 'clt-val', 'clt-right-bar', 'clt-right');
+
+  // Warning lights (DL_ bits)
+  const DL = d.showLights || 0;
+  const setWL = (id, bit, cls) => {
+    const el = document.getElementById(id);
+    if (DL & bit) { el.classList.add('active', cls); }
+    else { el.classList.remove('active', 'amber', 'red', 'green'); }
+  };
+  setWL('wl-abs',  1 << 10, 'amber');
+  setWL('wl-oil',  1 << 8,  'red');
+  setWL('wl-bat',  1 << 9,  'amber');
+  setWL('wl-hbk',  1 << 2,  'red');
+  setWL('wl-sl',   1 << 0,  'green');
+  setWL('wl-sigl', 1 << 5,  'amber');
+  setWL('wl-sigr', 1 << 6,  'amber');
+  setWL('wl-beam', 1 << 1,  'green');
+  setWL('wl-tc',   1 << 4,  'amber');
+}
+
+// ── DEMO SIMULATION ───────────────────────────────────
+// Replace this section with WebSocket feed when backend is ready
+let simT = 0;
+let sessionStart = Date.now();
+
+function simData(t) {
+  const cycle = (t % 12000) / 12000;
+  const rpm = 800 + Math.abs(Math.sin(t * 0.0008)) * 6800 + Math.random() * 80;
+  const speed = Math.abs(Math.sin(t * 0.0004)) * 220;
+  const throttle = Math.max(0, Math.sin(t * 0.0008) + Math.random() * 0.1);
+  const brake = throttle < 0.1 && speed > 10 ? Math.random() * 0.6 : 0;
+  const clutch = (rpm < 1200 || (t % 4000 < 200)) ? 1 : 0;
+  const gearVal = Math.floor(speed / 35) + 2;
+  const turbo = Math.max(0, (throttle - 0.2) * 2.2 + Math.random() * 0.05);
+  const engtemp = 85 + Math.sin(t * 0.0001) * 8;
+  const oiltemp = 95 + Math.sin(t * 0.00008) * 10;
+  const fuel = Math.max(0, 0.8 - t * 0.000002);
+
+  return {
+    rpm: Math.max(800, rpm),
+    speed,
+    gear: gearVal,
+    turbo,
+    engtemp,
+    oiltemp,
+    fuel,
+    throttle: Math.max(0, Math.min(1, throttle)),
+    brake: Math.max(0, Math.min(1, brake)),
+    clutch: Math.max(0, Math.min(1, clutch)),
+    showLights: rpm > 6800 ? (1 << 0) : 0
+  };
+}
+
+// Session timer
+setInterval(() => {
+  const elapsed = Math.floor((Date.now() - sessionStart) / 1000);
+  const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const s = String(elapsed % 60).padStart(2, '0');
+  document.getElementById('session-time').textContent = `${m}:${s}`;
+}, 1000);
+
+// Render loop
+function tick() {
+  simT += 16;
+  updateDash(simData(simT));
+  requestAnimationFrame(tick);
+}
+tick();
+
+// ── WEBSOCKET HOOK (uncomment when backend ready) ──────
+// const ws = new WebSocket('ws://localhost:8765');
+// ws.onmessage = (e) => updateDash(JSON.parse(e.data));
+// ws.onopen    = () => document.getElementById('conn-dot').classList.add('connected');
+// ws.onclose   = () => document.getElementById('conn-dot').classList.remove('connected');
+</script>
+</body>
+</html>

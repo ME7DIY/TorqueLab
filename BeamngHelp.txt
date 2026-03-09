@@ -1,0 +1,69 @@
+Here is a breakdown of BeamNG.drive’s Lua Extension API. It is an incredibly flexible, event-driven system that acts as the backbone for interacting with the game's physics and logic without overwriting official core files.
+
+If you are looking to pull live sensor data from the simulation (the "plant") to feed into an external script or hardware simulator, understanding how this API handles isolated environments is the most critical first step.
+
+The Virtual Machine Architecture
+BeamNG does not run on a single Lua thread. Instead, it isolates logic into separate Virtual Machines (VMs) that run in parallel:
+
+GameEngine Lua (GELUA): This runs on the main thread and handles global logic—career mode, UI orchestration, world events, camera controls, and multiplayer bridging. Files go in /lua/ge/extensions/.
+
+Vehicle Lua (VLUA): This is where the heavy lifting for physics happens. Every spawned vehicle gets its own isolated VLUA thread. It calculates powertrain logic, turbo spool, clutch thermals, and AI steering inputs. It can run at physics frequency (up to 2000Hz). Files go in /lua/vehicle/extensions/.
+
+Anatomy of an Extension
+At its core, a BeamNG Lua extension is simply a Lua file that returns a table (usually named M). The engine uses "hooks" to automatically call functions within this table during specific simulation events.
+
+Here is what a standard extension looks like:
+
+Lua
+-- File path example: /lua/vehicle/extensions/sensorBridge.lua
+local M = {}
+
+-- Declare dependencies to ensure the core vehicle logic loads first
+M.dependencies = {"core_vehicle"} 
+
+-- Hook: Called once when the extension is loaded
+local function onExtensionLoaded()
+    print("Sensor Bridge Extension Initialized!")
+end
+
+-- Hook: Called every graphics frame (depends on framerate)
+local function onUpdate(dtReal, dtSim, dtRaw)
+    -- Good for low-priority tasks or visual updates
+end
+
+-- Hook: Called every physics step (typically 2000Hz)
+local function onPhysicsStep(dtSim)
+    -- Ideal for pulling live, high-frequency engine sensor data
+    -- e.g., RPM, manifold pressure, mass airflow
+    local rpm = electrics.values['rpm'] 
+end
+
+-- Expose the functions to the extension table
+M.onExtensionLoaded = onExtensionLoaded
+M.onUpdate = onUpdate
+M.onPhysicsStep = onPhysicsStep
+
+return M
+Loading and Execution
+Extensions are entirely modular. Once your script is placed in the correct directory, it won't execute until it is explicitly loaded.
+
+Loading: You can load an extension manually via the game's developer console (extensions.load("myMod_myExtension")) or by setting it to load automatically in a vehicle's .jbeam file.
+
+Accessing Data: Once loaded, the extension acts as a global table in that VM. You can call its functions from anywhere within the same VM using myMod_myExtension.myFunction().
+
+Inter-VM Communication: Because GELUA and VLUA are isolated, they cannot share variables directly. They communicate asynchronously by enqueuing strings of code.
+
+VLUA to GELUA: obj:queueGameEngineLua('myLuaCode()')
+
+GELUA to VLUA: be:getPlayerVehicle(0):queueLuaCommand('myLuaCode()')
+
+Reloading on the Fly
+You do not need to restart the game to test code changes. BeamNG allows you to reload the VMs instantly, making iteration very fast:
+
+GELUA: Press Ctrl+L
+
+VLUA (Current Vehicle): Press Ctrl+R
+
+VLUA (All Vehicles): Press Ctrl+Shift+R
+
+Would you like to look at how to set up a UDP socket within a VLUA extension's onPhysicsStep function to start broadcasting live powertrain data out to a Python listener?
