@@ -4,13 +4,30 @@ local socket = require("libs/luasocket/socket.socket")
 
 local TARGET_HOST = "127.0.0.1"
 local TARGET_PORT = 4445
+local CMD_PORT = 4446
 local SEND_INTERVAL_SECONDS = 0.05
 
 local udpClient = nil
+local cmdSocket = nil
 local elapsedSinceSend = 0
 local sendCount = 0
 local suspensionBaseline = {}
 local getWheelDataByCorner
+local torqueScalar = 1.0
+local baseMaxTorque = nil
+local lastTuneStatus = nil
+local boostTarget = nil
+local boostOffsetPsi = 0
+local desiredBoostTarget = nil
+local boostDebugDumped = false
+local boostCeiling = nil
+local boostPid = {
+  p = 0.6,
+  i = 0.04,
+  d = 0.05,
+  integral = 0,
+  lastError = 0,
+}
 
 local CORNER_KEYS = {
   fl = "FL",
@@ -18,6 +35,9 @@ local CORNER_KEYS = {
   rl = "RL",
   rr = "RR",
 }
+
+local PSI_TO_BAR = 1 / 14.5038
+local PSI_PER_BAR = 14.5038
 
 local function safeNumber(value)
   if type(value) ~= "number" then
@@ -29,6 +49,26 @@ local function safeNumber(value)
   end
 
   return value
+end
+
+local function clamp(value, low, high)
+  if value < low then
+    return low
+  end
+  if value > high then
+    return high
+  end
+  return value
+end
+
+local function firstTable(...)
+  local candidates = { ... }
+  for _, value in ipairs(candidates) do
+    if type(value) == "table" then
+      return value
+    end
+  end
+  return nil
 end
 
 local function round(value, decimals)
@@ -71,6 +111,48 @@ local function firstNumber(...)
   end
 
   return nil
+end
+
+local function resolveBoostValue(...)
+  local candidate = firstNumber(...)
+  if candidate == nil then
+    return 0
+  end
+
+  local numeric = safeNumber(candidate)
+  if numeric == nil then
+    return 0
+  end
+
+  local absValue = math.abs(numeric)
+  if absValue > 5 then
+    if absValue > 200 then
+      -- likely kPa (100 kPa = 1 bar)
+      numeric = numeric * 0.01
+    else
+      -- likely psi
+      numeric = numeric * PSI_TO_BAR
+    end
+  end
+
+  return normalizeNumber(numeric, 4, 0.0001) or 0
+end
+
+local function getBoostOffsetClampPsi()
+  if boostCeiling ~= nil then
+    return clamp((boostCeiling * PSI_PER_BAR) - 5, 5, 40)
+  end
+  return 20
+end
+
+local function getActualBoostBar()
+  local electricsValues = electrics and electrics.values or {}
+  return resolveBoostValue(
+    electricsValues.boost,
+    electricsValues.turboBoost,
+    electricsValues.boostPressure,
+    electricsValues.manifoldPressure
+  )
 end
 
 local function computeWheelSpeedKph(wheelData)
@@ -285,22 +367,408 @@ local function collectPowertrainData()
     torqueNm = normalizeNumber(resolvedTorque or 0, 3, 0.001) or 0,
     gearRatio = normalizeNumber(resolvedGearRatio or 0, 5, 0.00001) or 0,
     boostCurve = {
-      actualBar = normalizeNumber(firstNumber(
+      actualBar = resolveBoostValue(
         electricsValues.boost,
         electricsValues.turboBoost,
-        electricsValues.boost,
         electricsValues.boostPressure,
         electricsValues.manifoldPressure
-      ) or 0, 4, 0.0001) or 0,
-      targetBar = normalizeNumber(firstNumber(
+      ),
+      targetBar = resolveBoostValue(
         electricsValues.boostMax,
         electricsValues.boostTarget,
         electricsValues.requestedBoost,
         electricsValues.turboBoostTarget,
         electricsValues.turboBoostMax
-      ) or 0, 4, 0.0001) or 0,
+      ),
     },
   }
+end
+
+local BOOST_FIELDS = {
+  "boostTarget",
+  "targetBoost",
+  "boostPressureTarget",
+  "wastegateTarget",
+  "wgTarget",
+  "boostMax",
+  "maxBoost",
+}
+
+local function getPowertrainDevices()
+  if not powertrain then
+    return {}
+  end
+  if type(powertrain.getDevices) == "function" then
+    local devices = powertrain.getDevices()
+    if type(devices) == "table" then
+      return devices
+    end
+  end
+  return {}
+end
+
+local function findBoostDevices()
+  local devices = {}
+  local named = {
+    "turbocharger",
+    "turbocharger1",
+    "supercharger",
+    "supercharger1",
+  }
+
+  if powertrain and powertrain.getDevice then
+    for _, name in ipairs(named) do
+      local device = powertrain.getDevice(name)
+      if type(device) == "table" then
+        devices[#devices + 1] = device
+      end
+    end
+  end
+
+  for _, device in pairs(getPowertrainDevices()) do
+    if type(device) == "table" then
+      devices[#devices + 1] = device
+      if type(device.turbocharger) == "table" then
+        devices[#devices + 1] = device.turbocharger
+      end
+      if type(device.supercharger) == "table" then
+        devices[#devices + 1] = device.supercharger
+      end
+    end
+  end
+
+  return devices
+end
+
+local function findBoostDevice()
+  return firstTable(unpack(findBoostDevices()))
+end
+
+local function findBoostModule(device)
+  if device == nil then
+    return nil
+  end
+  if type(device.turbocharger) == "table" then
+    return device.turbocharger
+  end
+  if type(device.turbocharger) == "string" and powertrain and type(powertrain.getDevice) == "function" then
+    local resolved = powertrain.getDevice(device.turbocharger)
+    if type(resolved) == "table" then
+      return resolved
+    end
+  end
+  return device
+end
+
+local function getUpvalue(func, name)
+  if type(debug) ~= "table" or type(debug.getupvalue) ~= "function" then
+    return nil, nil
+  end
+  local index = 1
+  while true do
+    local upName, upValue = debug.getupvalue(func, index)
+    if not upName then
+      return nil, nil
+    end
+    if upName == name then
+      return upValue, index
+    end
+    index = index + 1
+  end
+end
+
+local function setUpvalue(func, name, value)
+  if type(debug) ~= "table" or type(debug.setupvalue) ~= "function" then
+    return false
+  end
+  local _, index = getUpvalue(func, name)
+  if not index then
+    return false
+  end
+  debug.setupvalue(func, index, value)
+  return true
+end
+
+local function overwriteTableValues(tbl, value)
+  for key, _ in pairs(tbl) do
+    tbl[key] = value
+  end
+end
+
+local function hasBoostSupport()
+  local device = findBoostDevice()
+  local engine = powertrain and powertrain.getDevice and powertrain.getDevice("mainEngine") or nil
+  local mainController = controller and controller.mainController or nil
+  local deviceCandidates = { device }
+  if device and type(device.turbocharger) == "table" then
+    deviceCandidates[#deviceCandidates + 1] = device.turbocharger
+  end
+  if device and type(device.supercharger) == "table" then
+    deviceCandidates[#deviceCandidates + 1] = device.supercharger
+  end
+  for _, field in ipairs(BOOST_FIELDS) do
+    for _, dev in ipairs(deviceCandidates) do
+      if dev and dev[field] ~= nil then
+        return true
+      end
+    end
+    if engine and engine[field] ~= nil then
+      return true
+    end
+    if mainController and mainController[field] ~= nil then
+      return true
+    end
+  end
+
+  for _, dev in ipairs(deviceCandidates) do
+    if dev and type(dev.setWastegateOffset) == "function" then
+      return true
+    end
+  end
+  return false
+end
+
+local function hasBoostCeilingSupport()
+  local device = findBoostDevice()
+  local module = findBoostModule(device)
+  if module and (type(module.setWastegateLimit) == "function" or type(module.setWastegateStart) == "function") then
+    return true
+  end
+  if module and (type(module.wastegateLimit) == "number" or type(module.wastegateLimit) == "table") then
+    return true
+  end
+  if module and type(module.updateGFX) == "function" then
+    local limit = getUpvalue(module.updateGFX, "wastegateLimit")
+    return limit ~= nil
+  end
+  return false
+end
+
+local function applyBoostTarget(value)
+  local numeric = safeNumber(value)
+  if numeric == nil then
+    return false, "invalid_value"
+  end
+
+  local target = clamp(numeric, 0, 2.5)
+  local previousTarget = desiredBoostTarget or boostTarget
+  local loweringTarget = previousTarget ~= nil and target < previousTarget
+  local device = findBoostDevice()
+  local engine = powertrain and powertrain.getDevice and powertrain.getDevice("mainEngine") or nil
+  local mainController = controller and controller.mainController or nil
+  local applied = false
+  local deviceCandidates = { device }
+  if device and type(device.turbocharger) == "table" then
+    deviceCandidates[#deviceCandidates + 1] = device.turbocharger
+  end
+  if device and type(device.supercharger) == "table" then
+    deviceCandidates[#deviceCandidates + 1] = device.supercharger
+  end
+
+  for _, field in ipairs(BOOST_FIELDS) do
+    for _, dev in ipairs(deviceCandidates) do
+      if dev and dev[field] ~= nil then
+        dev[field] = target
+        applied = true
+        break
+      end
+    end
+    if applied then
+      break
+    end
+  end
+
+  if not applied then
+    for _, dev in ipairs(deviceCandidates) do
+      if dev and type(dev.setWastegateOffset) == "function" then
+        desiredBoostTarget = target
+        local actual = getActualBoostBar()
+        local errorBar = target - actual
+        boostPid.integral = clamp(boostPid.integral + errorBar, -5, 5)
+        local derivative = errorBar - boostPid.lastError
+        boostPid.lastError = errorBar
+        local offsetDeltaPsi = (errorBar * boostPid.p + boostPid.integral * boostPid.i + derivative * boostPid.d) * PSI_PER_BAR
+        local maxOffsetPsi = getBoostOffsetClampPsi()
+        boostOffsetPsi = clamp((boostOffsetPsi or 0) + offsetDeltaPsi, -maxOffsetPsi, maxOffsetPsi)
+        local ok = pcall(dev.setWastegateOffset, boostOffsetPsi)
+        if not ok then ok = pcall(dev.setWastegateOffset, dev, boostOffsetPsi) end
+        if not ok then ok = pcall(dev.setWastegateOffset, { offset = boostOffsetPsi }) end
+        if not ok then ok = pcall(dev.setWastegateOffset, dev, { offset = boostOffsetPsi }) end
+        if not ok then ok = pcall(dev.setWastegateOffset, { value = boostOffsetPsi }) end
+        if not ok then ok = pcall(dev.setWastegateOffset, dev, { value = boostOffsetPsi }) end
+        if ok then
+          applied = true
+          break
+        end
+      end
+    end
+  end
+
+  if not applied then
+    for _, field in ipairs(BOOST_FIELDS) do
+      if engine and engine[field] ~= nil then
+        engine[field] = target
+        applied = true
+        break
+      end
+    end
+  end
+
+  if not applied then
+    for _, field in ipairs(BOOST_FIELDS) do
+      if mainController and mainController[field] ~= nil then
+        mainController[field] = target
+        applied = true
+        break
+      end
+    end
+  end
+
+  if not applied then
+    if not boostDebugDumped then
+      boostDebugDumped = true
+      local devices = findBoostDevices()
+      log("I", "torquelabPhase2", "TORQUELAB boost debug: scanning powertrain devices")
+      for index, device in ipairs(devices) do
+        local name = device.name or device.uiName or device.type or "unknown"
+        local keys = {}
+        for key, _ in pairs(device) do
+          if type(key) == "string" then
+            keys[#keys + 1] = key
+          end
+        end
+        table.sort(keys)
+        log("I", "torquelabPhase2", "Device[" .. index .. "] name=" .. tostring(name))
+        log("I", "torquelabPhase2", "Device[" .. index .. "] keys=" .. table.concat(keys, ","))
+        local boostKeys = {}
+        for _, key in ipairs(keys) do
+          local lower = string.lower(key)
+          if string.find(lower, "boost") or string.find(lower, "turbo") or string.find(lower, "wg") or string.find(lower, "wastegate") or string.find(lower, "pressure") then
+            boostKeys[#boostKeys + 1] = key
+          end
+        end
+        if #boostKeys > 0 then
+          log("I", "torquelabPhase2", "Device[" .. index .. "] boost-related keys=" .. table.concat(boostKeys, ","))
+        end
+        if type(device.turbocharger) == "table" then
+          local turboKeys = {}
+          for key, _ in pairs(device.turbocharger) do
+            if type(key) == "string" then
+              turboKeys[#turboKeys + 1] = key
+            end
+          end
+          table.sort(turboKeys)
+          if #turboKeys > 0 then
+            log("I", "torquelabPhase2", "Device[" .. index .. "] turbocharger keys=" .. table.concat(turboKeys, ","))
+          end
+        end
+      end
+      if controller and controller.mainController then
+        local keys = {}
+        for key, _ in pairs(controller.mainController) do
+          if type(key) == "string" then
+            keys[#keys + 1] = key
+          end
+        end
+        table.sort(keys)
+        log("I", "torquelabPhase2", "MainController keys=" .. table.concat(keys, ","))
+      end
+      if electrics and electrics.values then
+        local keys = {}
+        for key, _ in pairs(electrics.values) do
+          if type(key) == "string" then
+            local lower = string.lower(key)
+            if string.find(lower, "boost") or string.find(lower, "turbo") or string.find(lower, "pressure") or string.find(lower, "wg") or string.find(lower, "wastegate") then
+              keys[#keys + 1] = key
+            end
+          end
+        end
+        table.sort(keys)
+        log("I", "torquelabPhase2", "Electrics boost keys=" .. table.concat(keys, ","))
+      end
+    end
+    return false, "unsupported"
+  end
+
+  if loweringTarget then
+    boostOffsetPsi = 0
+    boostPid.integral = 0
+    boostPid.lastError = 0
+    desiredBoostTarget = nil
+    log("I", "torquelabPhase2", "TORQUELAB boostTarget lowered; reset boost offset/PID")
+  end
+
+  boostTarget = target
+  return true, "applied"
+end
+
+local function applyBoostCeiling(value)
+  local numeric = safeNumber(value)
+  if numeric == nil then
+    return false, "invalid_value"
+  end
+
+  local targetBar = clamp(numeric, 0.5, 3.0)
+  local loweringCeiling = boostCeiling ~= nil and targetBar < boostCeiling
+  local targetPsi = targetBar * PSI_PER_BAR
+  local device = findBoostDevice()
+  local module = findBoostModule(device)
+  local applied = false
+
+  if module and type(module.setWastegateLimit) == "function" then
+    local ok = pcall(module.setWastegateLimit, module, targetPsi)
+    if not ok then ok = pcall(module.setWastegateLimit, targetPsi) end
+    if ok then
+      log("I", "torquelabPhase2", "TORQUELAB boostCeiling used setWastegateLimit psi=" .. tostring(targetPsi))
+      applied = true
+    end
+  end
+
+  if not applied and module and type(module.setWastegateStart) == "function" then
+    local ok = pcall(module.setWastegateStart, module, targetPsi * 0.85)
+    if not ok then ok = pcall(module.setWastegateStart, targetPsi * 0.85) end
+    if ok then
+      log("I", "torquelabPhase2", "TORQUELAB boostCeiling used setWastegateStart psi=" .. tostring(targetPsi * 0.85))
+      applied = true
+    end
+  end
+
+  if not applied and module and type(module.wastegateLimit) == "number" then
+    module.wastegateLimit = targetPsi
+    log("I", "torquelabPhase2", "TORQUELAB boostCeiling set wastegateLimit field psi=" .. tostring(targetPsi))
+    applied = true
+  elseif not applied and module and type(module.wastegateLimit) == "table" then
+    overwriteTableValues(module.wastegateLimit, targetPsi)
+    log("I", "torquelabPhase2", "TORQUELAB boostCeiling set wastegateLimit table psi=" .. tostring(targetPsi))
+    applied = true
+  end
+
+  if not applied and module and type(module.wastegateStart) == "number" then
+    module.wastegateStart = targetPsi * 0.85
+    log("I", "torquelabPhase2", "TORQUELAB boostCeiling set wastegateStart field psi=" .. tostring(targetPsi * 0.85))
+    applied = true
+  elseif not applied and module and type(module.wastegateStart) == "table" then
+    overwriteTableValues(module.wastegateStart, targetPsi * 0.85)
+    log("I", "torquelabPhase2", "TORQUELAB boostCeiling set wastegateStart table psi=" .. tostring(targetPsi * 0.85))
+    applied = true
+  end
+
+  -- Note: debug.setupvalue is blocked by BeamNG's sandbox, so we cannot modify upvalues here.
+
+  if not applied then
+    return false, "unsupported"
+  end
+
+  if loweringCeiling then
+    boostOffsetPsi = 0
+    boostPid.integral = 0
+    boostPid.lastError = 0
+    desiredBoostTarget = nil
+    log("I", "torquelabPhase2", "TORQUELAB boostCeiling lowered; reset boost offset/PID")
+  end
+
+  boostCeiling = targetBar
+  return true, "applied"
 end
 
 local function buildDebugData()
@@ -427,6 +895,55 @@ local function encodeJson(value)
   return "{" .. table.concat(encodedPairs, ",") .. "}"
 end
 
+local function decodeJson(value)
+  if type(value) ~= "string" then
+    return nil
+  end
+
+  if type(jsonDecode) == "function" then
+    local ok, decoded = pcall(jsonDecode, value)
+    if ok and type(decoded) == "table" then
+      return decoded
+    end
+  end
+
+  if type(json) == "table" and type(json.decode) == "function" then
+    local ok, decoded = pcall(json.decode, value)
+    if ok and type(decoded) == "table" then
+      return decoded
+    end
+  end
+
+  return nil
+end
+
+local function applyTorqueScalar(value)
+  local numeric = safeNumber(value)
+  if numeric == nil then
+    return false, "invalid_value"
+  end
+
+  local scalar = clamp(numeric, 0.5, 1.5)
+  local engine = powertrain and powertrain.getDevice and powertrain.getDevice("mainEngine") or nil
+  if engine == nil then
+    return false, "engine_missing"
+  end
+
+  if engine.torqueCurveScale ~= nil then
+    engine.torqueCurveScale = scalar
+  elseif engine.maxTorque ~= nil then
+    baseMaxTorque = baseMaxTorque or engine.maxTorque
+    engine.maxTorque = baseMaxTorque * scalar
+  elseif engine.torqueMultiplier ~= nil then
+    engine.torqueMultiplier = scalar
+  else
+    return false, "unsupported"
+  end
+
+  torqueScalar = scalar
+  return true, "applied"
+end
+
 local function buildPayload()
   local wheelSpeeds, suspensionTravel = collectWheelData()
   local powertrainData = collectPowertrainData()
@@ -439,6 +956,25 @@ local function buildPayload()
     torqueNm = powertrainData.torqueNm,
     gearRatio = powertrainData.gearRatio,
     boostCurve = powertrainData.boostCurve,
+    tunables = {
+      torqueScalar = true,
+      boostTarget = hasBoostSupport(),
+      boostCeiling = hasBoostSupport(),
+    },
+    tune = {
+      torqueScalar = torqueScalar,
+      boostTarget = boostTarget,
+      boostOffsetPsi = boostOffsetPsi,
+      boostCeiling = boostCeiling,
+      boostPid = {
+        p = boostPid.p,
+        i = boostPid.i,
+        d = boostPid.d,
+        integral = boostPid.integral,
+        lastError = boostPid.lastError,
+      },
+      lastStatus = lastTuneStatus,
+    },
     debug = buildDebugData(),
   }
 end
@@ -455,6 +991,71 @@ local function ensureSocket()
 
   udpClient:settimeout(0)
   return true
+end
+
+local function ensureCommandSocket()
+  if cmdSocket ~= nil then
+    return true
+  end
+
+  cmdSocket = socket.udp()
+  if cmdSocket == nil then
+    return false
+  end
+
+  cmdSocket:settimeout(0)
+  local ok, err = cmdSocket:setsockname(TARGET_HOST, CMD_PORT)
+  if not ok then
+    log("E", "torquelabPhase2", "TORQUELAB Phase 2 failed to bind tune socket: " .. tostring(err))
+    return false
+  end
+  return true
+end
+
+local function pollTuneCommands(maxReads)
+  if not ensureCommandSocket() then
+    return
+  end
+
+  local reads = 0
+  while reads < (maxReads or 4) do
+    local payload = cmdSocket:receive()
+    if not payload then
+      return
+    end
+    reads = reads + 1
+
+    local command = decodeJson(payload)
+    if type(command) ~= "table" then
+      lastTuneStatus = "bad_json"
+    elseif command.type == "tune" then
+      if command.param == "torqueScalar" then
+        local ok, status = applyTorqueScalar(command.value)
+        lastTuneStatus = ok and status or status
+        if ok then
+          log("I", "torquelabPhase2", "TORQUELAB tune torqueScalar=" .. tostring(torqueScalar))
+        else
+          log("W", "torquelabPhase2", "TORQUELAB tune rejected: " .. tostring(status))
+        end
+      elseif command.param == "boostTarget" then
+        local ok, status = applyBoostTarget(command.value)
+        lastTuneStatus = ok and status or status
+        if ok then
+          log("I", "torquelabPhase2", "TORQUELAB tune boostTarget=" .. tostring(boostTarget))
+        else
+          log("W", "torquelabPhase2", "TORQUELAB tune rejected: " .. tostring(status))
+        end
+      elseif command.param == "boostCeiling" then
+        local ok, status = applyBoostCeiling(command.value)
+        lastTuneStatus = ok and status or status
+        if ok then
+          log("I", "torquelabPhase2", "TORQUELAB tune boostCeiling=" .. tostring(boostCeiling))
+        else
+          log("W", "torquelabPhase2", "TORQUELAB tune rejected: " .. tostring(status))
+        end
+      end
+    end
+  end
 end
 
 local function sendPayload()
@@ -481,6 +1082,7 @@ local function onExtensionLoaded()
   sendCount = 0
   initializeSuspensionBaseline()
   ensureSocket()
+  ensureCommandSocket()
   log("I", "torquelabPhase2", "TORQUELAB Phase 2 vehicle telemetry bridge loaded")
   sendPayload()
 end
@@ -503,6 +1105,22 @@ end
 
 local function updateGFX(dt)
   elapsedSinceSend = elapsedSinceSend + (dt or 0)
+  pollTuneCommands(6)
+  if desiredBoostTarget then
+    local actual = getActualBoostBar()
+    local error = desiredBoostTarget - actual
+    boostPid.integral = clamp(boostPid.integral + error * 0.15, -5, 5)
+    local derivative = error - boostPid.lastError
+    boostPid.lastError = error
+    local offsetDeltaPsi = (error * boostPid.p + boostPid.integral * boostPid.i + derivative * boostPid.d) * PSI_PER_BAR
+    boostOffsetPsi = clamp((boostOffsetPsi or 0) + offsetDeltaPsi, -50, 50)
+    local device = findBoostDevice()
+    if device and type(device.turbocharger) == "table" then
+      pcall(device.turbocharger.setWastegateOffset, device.turbocharger, boostOffsetPsi)
+    elseif device and type(device.setWastegateOffset) == "function" then
+      pcall(device.setWastegateOffset, device, boostOffsetPsi)
+    end
+  end
   if elapsedSinceSend < SEND_INTERVAL_SECONDS then
     return
   end
@@ -515,6 +1133,10 @@ local function onExtensionUnloaded()
   if udpClient ~= nil then
     udpClient:close()
     udpClient = nil
+  end
+  if cmdSocket ~= nil then
+    cmdSocket:close()
+    cmdSocket = nil
   end
 end
 
